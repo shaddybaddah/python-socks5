@@ -5,6 +5,20 @@ import socket
 from threading import Thread
 import sys
 import signal
+import traceback
+import argparse
+import os
+
+usage = 'socks5'
+
+desc = '''
+socks5
+'''
+
+host_lookup={}
+
+hosts_file_path=None
+hosts_file_mtime=0
 
 SOCKTIMEOUT=5#客户端连接超时(秒)
 RESENDTIMEOUT=300#转发超时(秒)
@@ -40,7 +54,26 @@ class SimpleLog(Log):
 	def write(self,message,level=Log.INFO):
 		if self.show_log:
 			self.__output.write("%s\t%s\n" %(level,message))
-			
+
+def parse_hosts_file():
+        global hosts_file_mtime
+        global hosts_file_path
+        global host_lookup
+        
+        if hosts_file_path is None:
+                return
+
+        prev_mtime=hosts_file_mtime
+        hosts_file_mtime=os.stat(hosts_file_path).st_mtime
+        if hosts_file_mtime > prev_mtime:
+                host_lookup={}
+                hosts = open(hosts_file_path, 'r')
+                for line in hosts:
+                        line_parts = line.split()
+                        if len(line_parts) > 1 and line_parts[0][0] != '#':
+                                for hostname in line_parts[1:]:
+                                        host_lookup[hostname] = line_parts[0]
+
 def getLogger(output=sys.stdout):
 	global _LOGGER
 	if not _LOGGER:
@@ -115,9 +148,20 @@ def create_server(ip,port):
 		sock.settimeout(SOCKTIMEOUT)
 		getLogger().write("Got one client connection")
 		try:
-			ver,nmethods,methods=(sock.recv(1),sock.recv(1),sock.recv(1))
-			sock.sendall(VER+METHOD)
-			ver,cmd,rsv,atyp=(sock.recv(1),sock.recv(1),sock.recv(1),sock.recv(1))
+			ver,nmethods=(sock.recv(1),sock.recv(1))
+                        # getLogger().write("ver %d, nmethods %d" % (ord(ver), ord(nmethods),))
+                        if ord(ver) != 5:
+                                getLogger().write("Can only handle socks5",Log.ERROR)
+                                sock.close()
+                                continue
+
+                        methods=sock.recv(ord(nmethods))
+                        sock.sendall(VER+METHOD)
+                        ver=sock.recv(1)
+                        cmd=sock.recv(1)
+                        rsv=sock.recv(1)
+                        atyp=sock.recv(1)
+
 			dst_addr=None
 			dst_port=None
 			if atyp=="\x01":#IPV4
@@ -127,12 +171,20 @@ def create_server(ip,port):
 				addr_len=ord(sock.recv(1))#域名的长度
 				dst_addr,dst_port=sock.recv(addr_len),sock.recv(2)
 				dst_addr="".join([unichr(ord(i)) for i in dst_addr])
+                                parse_hosts_file()
+                                try:
+                                        dst_addr=host_lookup[dst_addr]
+                                except KeyError:
+                                        print "Yeah there is an error"
 			elif atyp=="\x04":#IPV6
 				dst_addr,dst_port=sock.recv(16),sock.recv(2)
 				tmp_addr=[]
 				for i in xrange(len(dst_addr)/2):
 					tmp_addr.append(unichr(ord(dst_addr[2*i])*256+ord(dst_addr[2*i+1])))
 				dst_addr=":".join(tmp_addr)
+                        else:
+                                getLogger().write("atyp is unsupported",Log.ERROR)
+                                
 			dst_port=ord(dst_port[0])*256+ord(dst_port[1])
 			getLogger().write("Client wants to connect to %s:%d" %(dst_addr,dst_port))
 			server_sock=sock
@@ -152,8 +204,10 @@ def create_server(ip,port):
 				sock.sendall(VER+UNSPPORTCMD+server_ip+chr(port/256)+chr(port%256))
 				sock.close()
 		except Exception,e:
-			getLogger().write("Error on starting transform:"+e.message,Log.ERROR)
-			sock.close()
+                        exc_type, exc_value, exc_traceback = sys.exc_info()
+                        traceback.print_tb(exc_traceback, file=sys.stdout)
+                        getLogger().write("Error on starting transform:"+e.message,Log.ERROR)
+                        sock.close()
 
 class OnExit:
 	def __init__(self,sock):
@@ -164,10 +218,26 @@ class OnExit:
 
 
 if __name__=='__main__':
-	try:
-		ip="0.0.0.0"
-		port=8080
-		create_server(ip,port)
-	except Exception,e:
-		getLogger().write("Error on create server:"+e.message,Log.ERROR)
+        # print sys.argv
+        argv = sys.argv[1:]
+        try:
+                p=argparse.ArgumentParser(
+                        usage=usage,
+                        formatter_class=argparse.RawDescriptionHelpFormatter,
+                        description=desc
+                )
+                p.add_argument('--hosts-file')
+                p.add_argument('--listen-host', default='0.0.0.0')
+                p.add_argument('--listen-port', type=int, default=8080)
+                opts=p.parse_args(argv)
 
+                hosts_file_path=opts.hosts_file
+                hosts_file_mtime=0
+                # print host_lookup
+                # sys.exit(0)
+
+                create_server(opts.listen_host,opts.listen_port)
+        except Exception,e:
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                traceback.print_tb(exc_traceback, file=sys.stdout)
+                getLogger().write("Error on create server:"+e.message,Log.ERROR)
