@@ -107,8 +107,10 @@ class SocketTransform(Thread):
 			self.sock,info=sock.accept()
 			getLogger().write("Client connected")
 		getLogger().write("Starting Resending")
-		self.sock.settimeout(RESENDTIMEOUT)
-		self.dest.settimeout(RESENDTIMEOUT)
+		# self.sock.settimeout(RESENDTIMEOUT)
+		# self.dest.settimeout(RESENDTIMEOUT)
+		self.sock.settimeout(None)
+		self.dest.settimeout(None)
 		Resender(self.sock,self.dest).start()
 		Resender(self.dest,self.sock).start()
 
